@@ -135,11 +135,11 @@ export async function mount(el) {
           <div class="sec-head"><span class="stat-icon green">${icon("store", "lg")}</span><div><h3>Store profile</h3><div class="muted">Appears in the receipt header</div></div></div>
           <div class="form-grid">
             <div class="field"><label>Store name</label><input class="input" name="storeName" required value="${esc(state.settings.storeName)}" /></div>
-            <div class="field"><label>Brand tagline / description</label><input class="input" name="brandTagline" value="${esc(state.settings.brandTagline || "Grocery POS")}" placeholder="Grocery POS" /></div>
+            <div class="field"><label>Brand tagline / description</label><input class="input" name="brandTagline" value="${esc(state.settings.brandTagline ?? "")}" placeholder="Grocery POS" /></div>
             <div class="field span-2"><label>Address</label><input class="input" name="address" value="${esc(state.settings.address)}" /></div>
             <div class="field span-2"><label>Phone numbers</label><div id="settingsPhones"></div><button class="btn btn-ghost" type="button" id="addSettingsPhone">+ Add another number</button><span class="hint">Each number can be assigned to Voice calls, WhatsApp, or both.</span></div>
             <div class="field"><label>Language</label><select class="select" name="language" id="settingsLanguage"></select></div>
-            <div class="field"><label>Primary phone</label><input class="input" name="phone" value="${esc(state.settings.phone)}" /></div>
+            <div class="field"><label>Primary phone</label><input class="input" name="phone" value="${esc(state.settings.phone || (() => { try { return JSON.parse(state.settings.phoneNumbers || "[]").find((p) => String(p.number || "").trim())?.number || ""; } catch { return ""; } })())}" /></div>
             <div class="field"><label>Tax / GST / VAT ID</label><input class="input" name="taxId" value="${esc(state.settings.taxId)}" /></div>
             <div class="field"><label>Currency symbol</label><input class="input" name="currency" maxlength="4" value="${esc(state.settings.currency)}" /></div>
             <div class="field"><label>Tax label</label><input class="input" name="taxLabel" maxlength="12" value="${esc(state.settings.taxLabel)}" placeholder="Tax, GST, VAT…" /></div>
@@ -245,7 +245,8 @@ export async function mount(el) {
     </details>`;
 
   function scriptNotice() {
-    if (cfg.mode === "local" || selected !== cfg.mode || scriptUpToDate()) return "";
+    // An empty version means bootstrap has not confirmed the deployed script version yet.
+    if (cfg.mode === "local" || selected !== cfg.mode || !state.meta.scriptVersion || scriptUpToDate()) return "";
     return `<div class="sync-error" style="margin-top:14px;align-items:flex-start">${icon("alert", "sm")}<div>Your Google Apps Script is ${state.meta.scriptVersion ? "version " + esc(state.meta.scriptVersion) : "an older version"}.
       Paste the latest <b>Code.gs</b> into Apps Script and choose <b>Deploy ▸ Manage deployments ▸ Edit ▸ New version</b> to enable demo data, bulk import, product photos on Google Drive and syncing of store colours.
       <div class="btn-row" style="margin-top:8px"><button class="btn btn-sm btn-outline" data-act="copyCode">Copy Code.gs</button></div></div></div>`;
@@ -660,18 +661,21 @@ export async function mount(el) {
         if (!navigator.onLine) return toast("Connect to Google Sheets before enabling Drive backups.", "warn");
         busy(btn, true, "Setting up…");
         const r = await backend.backupSetup({ hour: 2 });
+        if (!r || r.ok === false || r.configured === false) throw new Error(r?.message || "The Apps Script did not confirm that Google Drive backups were enabled.");
         toast(r.message || "Automatic Google Drive backups enabled", "success");
         renderBackup();
       } else if (act === "cloudBackupNow") {
         if (!navigator.onLine) return toast("Cloud backup needs internet.", "warn");
         busy(btn, true, "Backing up…");
         const r = await backend.backupNow({ kind: "manual" });
+        if (!r || r.ok === false) throw new Error(r?.message || "The Apps Script did not confirm that the backup was created.");
         toast(r.message || "Google Drive backup created", "success");
         renderBackup();
       } else if (act === "verifyCloudBackup") {
         if (!navigator.onLine) return toast("Cloud verification needs internet.", "warn");
         busy(btn, true, "Verifying…");
         const r = await backend.backupVerify();
+        if (!r) throw new Error("The Apps Script returned no backup verification result.");
         toast(r.message || (r.ok ? "Cloud backup verification passed" : "Cloud backup verification failed"), r.ok ? "success" : "error");
         renderBackup();
       } else if (act === "cloudRestore") {
@@ -680,8 +684,14 @@ export async function mount(el) {
         if (!id) return toast("Paste the Google Drive backup file ID first.", "error");
         if (!confirm("This will replace the live Google Sheets data. A pre-restore backup will be created automatically. Continue?")) return;
         busy(btn, true, "Restoring…");
-        try { const r = await backend.backupRestore({ fileId: id }); toast(r.message || "Restore completed", "success"); await reloadLocal(); }
-        finally { busy(btn, false); renderBackup(); }
+        try {
+          const r = await backend.backupRestore({ fileId: id });
+          if (!r || r.ok === false) throw new Error(r?.message || "The Apps Script returned no restore result. No success was reported.");
+          toast(r.message || "Restore completed", "success");
+          await reloadLocal();
+        } catch (e) {
+          toast(e?.message || "Google Drive restore failed.", "error");
+        } finally { busy(btn, false); renderBackup(); }
       } else if (act === "forgetFolder") {
         await forgetFolder();
         toast("Folder backups stopped (existing files are kept)");

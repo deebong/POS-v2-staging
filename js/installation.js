@@ -279,7 +279,7 @@ export async function showInstallationWizard(root = document.getElementById("vie
     data.adminPin=$("#iAdminPin",root)?.value||data.adminPin||""; data.adminPin2=$("#iAdminPin2",root)?.value||data.adminPin2||"";
     data.taxId=$("#iTaxId",root).value.trim(); data.taxLabel=$("#iTaxLabel",root).value.trim()||"GST"; data.upiId=$("#iUpi",root).value.trim();
     data.themeColor=/^#[0-9a-f]{6}$/i.test($("#iColorHex",root).value.trim())?$("#iColorHex",root).value.trim():$("#iColor",root).value;
-    data.brandTagline=$("#iBrandTagline",root)?.value.trim()||data.brandTagline||"Grocery POS";
+    data.brandTagline=$("#iBrandTagline",root)?.value.trim() ?? data.brandTagline ?? "Grocery POS";
     data.productLabelCode=$("#iLabelCode",root).value; data.productImageMode=$("#iImages",root).value; data.receiptFooter=$("#iFooter",root).value.trim();
     data.mode=$("#iMode",root)?.value||data.mode||"hybrid"; data.url=$("#iUrl",root).value.trim(); data.key=$("#iKey",root).value; data.setupCode=$("#iSetupCode",root)?.value.trim()||data.setupCode||"";
   };

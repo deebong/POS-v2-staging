@@ -312,8 +312,10 @@ async function authenticateServer(user = currentStaff()) {
   if (!user || !navigator.onLine || cfg.mode === "local" || !cfg.url) return false;
   const cooldown = serverAuthCooldown(user);
   if (cooldown > Date.now()) return false;
-  const { getAuthToken } = await import("./auth.js");
-  if (getAuthToken()) return true;
+  const { getAuthToken, clearAuthToken } = await import("./auth.js");
+  // A token can survive a tab close after its server session expires or is revoked.
+  // Replace it with a fresh session rather than trusting local token presence.
+  if (getAuthToken()) clearAuthToken();
   if (onlineAuthPromise) return onlineAuthPromise;
   onlineAuthPromise = (async () => {
     const localHash = user.pinHash || "";

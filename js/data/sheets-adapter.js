@@ -15,7 +15,7 @@ export function createSheetsAdapter({ url, key }) {
         const res = await fetch(url, {
           method: "POST",
           headers: { "Content-Type": "text/plain;charset=utf-8", Accept: "application/json,text/plain,*/*" },
-          body: JSON.stringify({ action, ...(key ? { key } : {}), ...(sessionStorage.getItem("freshmart.auth.token") ? { authToken: sessionStorage.getItem("freshmart.auth.token") } : {}), ...payload }),
+          body: JSON.stringify({ action, ...(key ? { key } : {}), ...((localStorage.getItem("freshmart.auth.token") || sessionStorage.getItem("freshmart.auth.token")) ? { authToken: (localStorage.getItem("freshmart.auth.token") || sessionStorage.getItem("freshmart.auth.token")) } : {}), ...payload }),
           redirect: "follow",
           cache: "no-store",
           signal: ctrl.signal,
