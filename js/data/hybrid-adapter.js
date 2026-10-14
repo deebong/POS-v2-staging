@@ -151,18 +151,25 @@ export async function createHybridAdapter(cfg) {
       emit();
       let changed = false;
       try {
-        // A hybrid sync is a server-authorized operation. If the short-lived browser
-        // token is missing, share the in-flight local-first sign-in reauthentication
-        // instead of racing it and immediately declaring the session expired.
-        const { getAuthToken } = await import("../auth.js");
-        if (!getAuthToken()) {
-          const { ensureOnlineStaffAuth } = await import("../staff.js");
-          const authenticated = await ensureOnlineStaffAuth();
-          if (!authenticated) throw new Error("Authentication required or session expired. Sign in again.");
+        // A persisted token may exist locally even after its server session expires.
+        // Probe authentication through the protected sync action and repair once on the
+        // explicit expired-session response; token presence alone is not proof of validity.
+        async function sendBatchWithAuth(batch) {
+          try {
+            return await remote.syncBatch({ ops: batch, deviceId: device.id, deviceCode: device.code });
+          } catch (e) {
+            if (!/Authentication required or session expired/i.test(String(e?.message || e))) throw e;
+            const { clearAuthToken } = await import("../auth.js");
+            const { ensureOnlineStaffAuth } = await import("../staff.js");
+            clearAuthToken();
+            const authenticated = await ensureOnlineStaffAuth();
+            if (!authenticated) throw e;
+            return remote.syncBatch({ ops: batch, deviceId: device.id, deviceCode: device.code });
+          }
         }
         while (outbox.length && !disposed) {
           const batch = outbox.slice(0, BATCH);
-          const res = await remote.syncBatch({ ops: batch, deviceId: device.id, deviceCode: device.code });
+          const res = await sendBatchWithAuth(batch);
           const results = new Map((res.results || []).map((r) => [r.opId, r]));
           if (!results.size) throw new Error("The sheet didn't confirm any changes");
           for (const op of batch) {
