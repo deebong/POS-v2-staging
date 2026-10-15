@@ -727,7 +727,13 @@ export async function mount(el) {
         if (!ok) return;
         busy(btn, true, "Loading demo…");
         try {
-          const r = await importBulk(demoPayload());
+          // Demo import writes to the active backend and is protected by server-side
+          // manager authorization. Re-establish a fresh server session when a local
+          // session outlives its Google Sheets token, then retry only an auth failure.
+          const r = await withSettingsAuthRetry(
+            () => importBulk(demoPayload()),
+            "Google Sheets sign-in is required to load demo data.",
+          );
           toast(`Demo ready: ${r.productsAdded} products and ${r.salesAdded} sample bills added`);
           location.hash = "#/dashboard";
         } finally {
