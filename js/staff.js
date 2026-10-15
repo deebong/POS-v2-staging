@@ -216,28 +216,44 @@ async function signIn(user, pin) {
   if (!localHash || localHash !== user.pinHash) throw new Error("Incorrect PIN.");
   const cfg = (() => { try { return JSON.parse(localStorage.getItem("pos.backend.v1") || "{}"); } catch { return {}; } })();
 
-  // Local credential validation is authoritative for this offline-first counter. Establish
-  // the local session first; Apps Script authentication must never make the sign-in modal
-  // wait on network/cold-start latency.
+  // Establish the local-first session immediately. When cloud mode is configured,
+  // use the PIN entered in this interactive sign-in to authenticate against the
+  // server's own salt/verifier. Reusing the local PIN hash silently fails whenever
+  // the local and server salts differ, leaving every protected action unauthenticated.
   currentId = user.id;
   user.lastLoginAt = now();
   user.updatedAt = now();
   await persist();
   await persistSession();
 
+  let cloudAuthError = "";
   if (navigator.onLine && cfg.mode && cfg.mode !== "local" && cfg.url) {
-    // Server authentication is deliberately background-only. A transient Apps Script
-    // delay must never turn a successful local sign-in into an "offline" sign-in state.
-    ensureOnlineStaffAuth().then(() => {
+    try {
+      clearServerAuthCooldown();
+      const { onlineLogin, clearAuthToken } = await import("./auth.js");
+      const serverUser = await onlineLogin(user.username, pin);
+      if (serverUser.id !== user.id) {
+        clearAuthToken();
+        throw new Error("The Google Sheets staff account does not match this device's staff record. Use the one-time setup-code repair to reconcile staff accounts.");
+      }
+      sessionStorage.removeItem("freshmart.auth.offline");
       window.dispatchEvent(new CustomEvent("staff:server-auth", { detail: { ok: true } }));
       window.dispatchEvent(new CustomEvent("sync:status"));
-    }).catch(() => {
-      // Do not surface transport/authentication failures during sign-in. Protected
-      // operations will retry server authentication when they actually need it.
-    });
+    } catch (error) {
+      cloudAuthError = String(error?.message || error || "Google Sheets authentication failed.");
+      window.dispatchEvent(new CustomEvent("staff:server-auth", { detail: { ok: false, message: cloudAuthError } }));
+      window.dispatchEvent(new CustomEvent("sync:status"));
+    }
   }
 
-  toast(`Signed in as ${user.name}`);
+  if (cloudAuthError) {
+    if (/Invalid username or PIN|staff account does not match|credential.*out of sync/i.test(cloudAuthError)) {
+      throw new Error("Google Sheets staff credentials are out of sync. Use the one-time setup-code repair below.");
+    }
+    toast("Signed in on this PC, but Google Sheets sign-in failed: " + cloudAuthError, "warn");
+  } else {
+    toast(`Signed in as ${user.name}`);
+  }
   return user;
 }
 
@@ -461,7 +477,7 @@ export async function loginStaff(force = false) {
         completed = true; m.close(); resolve(signed);
       } catch (e) {
         const message = e.message || "Sign-in failed.";
-        if (user && /^(Invalid username or PIN\.?|This account is temporarily locked\b)/.test(message) && getConfig().mode !== "local") {
+        if (user && (/^(Invalid username or PIN\.?|This account is temporarily locked\b)/.test(message) || /Google Sheets staff credentials are out of sync/i.test(message)) && getConfig().mode !== "local") {
           // Do not attempt an unauthenticated server staff sync here. authSyncStaff
           // is intentionally protected and would create a circular recovery path.
           // Instead, expose the explicit one-time setup-code recovery.
