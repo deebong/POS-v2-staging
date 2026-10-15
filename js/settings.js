@@ -556,6 +556,24 @@ export async function mount(el) {
         throw new Error("Your Apps Script is an older version. Paste the latest Code.gs into Apps Script and deploy a New version, then try again.");
       }
       saveConfig({ mode, url, key });
+      if (mode === "hybrid") {
+        // Hybrid bootstrap is server-authorized. Authenticate the already PIN-verified
+        // local operator before loadAll() requests protected cloud data or opens the
+        // empty-sheet import choice. Reuse the local PIN verifier; never invent an admin.
+        const { getAuthToken, onlineLogin } = await import("./auth.js");
+        if (!getAuthToken()) {
+          const { currentStaff } = await import("./staff.js");
+          const user = currentStaff();
+          if (!user?.pinHash || !user?.pinSalt) {
+            throw new Error("Sign in again with your staff PIN before connecting Google Sheets.");
+          }
+          await onlineLogin(user.username, "", {
+            pinHash: user.pinHash,
+            pinSalt: user.pinSalt,
+            pinIterations: 120000,
+          });
+        }
+      }
       await loadAll();
       if (mode === "hybrid") requestPersist();
       window.dispatchEvent(new CustomEvent("settings:changed"));
@@ -661,14 +679,14 @@ export async function mount(el) {
         if (!navigator.onLine) return toast("Connect to Google Sheets before enabling Drive backups.", "warn");
         busy(btn, true, "Setting up…");
         const r = await backend.backupSetup({ hour: 2 });
-        if (!r || r.ok === false || r.configured === false) throw new Error(r?.message || "The Apps Script did not confirm that Google Drive backups were enabled.");
+        if (!r || r.ok === false || r.configured === false) throw new Error(r?.message || r?.error || "The Apps Script did not confirm that Google Drive backups were enabled.");
         toast(r.message || "Automatic Google Drive backups enabled", "success");
         renderBackup();
       } else if (act === "cloudBackupNow") {
         if (!navigator.onLine) return toast("Cloud backup needs internet.", "warn");
         busy(btn, true, "Backing up…");
         const r = await backend.backupNow({ kind: "manual" });
-        if (!r || r.ok === false) throw new Error(r?.message || "The Apps Script did not confirm that the backup was created.");
+        if (!r || r.ok === false) throw new Error(r?.message || r?.error || "The Apps Script did not confirm that the backup was created.");
         toast(r.message || "Google Drive backup created", "success");
         renderBackup();
       } else if (act === "verifyCloudBackup") {

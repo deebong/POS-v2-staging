@@ -73,6 +73,8 @@ function doPost(e) {
     var handler = ACTIONS[req.action];
     if (!handler) throw new Error('Unknown action: ' + req.action);
     var actor = requireActionAuth_(req);
+    // Only the server may attach the authenticated identity used for response scoping.
+    req._actor = actor;
     out = handler(req);
     if (actor) out.actor = { id: actor.id, name: actor.name, username: actor.username, role: actor.role };
     out.ok = true;
@@ -238,17 +240,18 @@ function requireActionAuth_(req) {
   if (PropertiesService.getScriptProperties().getProperty('AUTH_ENFORCED') !== 'true') return null;
   var action = String(req.action || '');
   var roles = {
+    bootstrap: 'cashier', getSale: 'cashier', procurementBootstrap: 'manager',
     saveProduct: 'manager', deleteProduct: 'manager', adjustStock: 'manager', importProducts: 'manager',
     checkout: 'cashier', voidSale: 'manager', saveSettings: 'admin', importBulk: 'manager',
-    uploadImage: 'manager', saveCustomer: 'cashier', backupSetup: 'admin', backupNow: 'admin', backupVerify: 'admin',
-    procurementSync: 'manager'
+    uploadImage: 'manager', saveCustomer: 'cashier', backupStatus: 'admin', backupSetup: 'admin',
+    backupNow: 'admin', backupVerify: 'admin', backupRestore: 'admin', procurementSync: 'manager'
   };
   if (action === 'installationStatus' || action === 'initialize') return null;
   if (action === 'auditAppend') return authRequireRole_(req, 'cashier');
   if (action === 'authDevices' || action === 'authRevokeDevice') return authRequireRole_(req, 'admin');
   if (action === 'syncBatch') {
     var ops = Array.isArray(req.ops) ? req.ops : [];
-    var sensitive = ops.some(function (op) { return /^(product\.|stock\.|settings\.|procurement\.)/.test(String(op && op.type || '')); });
+    var sensitive = ops.some(function (op) { return /^(product\.|stock\.|settings\.|procurement\.|void$|import$)/.test(String(op && op.type || '')); });
     return authRequireRole_(req, sensitive ? 'manager' : 'cashier');
   }
   if (roles[action]) return authRequireRole_(req, roles[action]);
@@ -737,18 +740,28 @@ function bootstrap_(req) {
   var since = new Date().getTime() - days * 86400000;
   var ss = ss_();
 
+  var actor = req && req._actor;
+  var isCashier = actor && actor.role === 'cashier';
   var sales = readTable_('Sales').filter(function (s) {
-    return s.createdAt && new Date(s.createdAt).getTime() >= since;
+    if (!s.createdAt) return false;
+    if (isCashier) return Utilities.formatDate(new Date(s.createdAt), tz_(), 'yyyy-MM-dd') === Utilities.formatDate(new Date(), tz_(), 'yyyy-MM-dd');
+    return new Date(s.createdAt).getTime() >= since;
   });
   var ids = {};
   sales.forEach(function (s) { ids[s.id] = true; });
-  var items = readTable_('SaleItems').filter(function (i) { return ids[i.saleId]; });
+  var items = readTable_('SaleItems').filter(function (i) { return ids[i.saleId]; }).map(pubItem_);
+  var products = readTable_('Products').map(pubProduct_);
+  // Cashiers need prices and stock for checkout, not supplier cost/margin data.
+  if (isCashier) {
+    products.forEach(function (p) { p.cost = 0; });
+    items.forEach(function (item) { item.cost = 0; });
+  }
 
   return {
     settings: settingsMap_(),
-    products: readTable_('Products').map(pubProduct_),
+    products: products,
     sales: sales.map(pubSale_),
-    saleItems: items.map(pubItem_),
+    saleItems: items,
     customers: readTable_('Customers').filter(function (x) { return x.active !== false; }),
     spreadsheetUrl: ss.getUrl(),
     spreadsheetName: ss.getName(),
@@ -987,7 +1000,13 @@ function getSale_(req) {
   var rows = req.id ? findRows_('Sales', 'id', req.id) : findRows_('Sales', 'invoiceNo', req.invoiceNo);
   if (!rows.length) return { sale: null, items: [] };
   var s = readRow_('Sales', rows[0]);
-  return { sale: pubSale_(s), items: itemsForSale_(s.id).map(pubItem_) };
+  if (req && req._actor && req._actor.role === 'cashier' &&
+      Utilities.formatDate(new Date(s.createdAt), tz_(), 'yyyy-MM-dd') !== Utilities.formatDate(new Date(), tz_(), 'yyyy-MM-dd')) {
+    throw new Error('Cashier access is limited to today’s invoices. Ask a Manager or Super Admin for older invoices.');
+  }
+  var items = itemsForSale_(s.id).map(pubItem_);
+  if (req && req._actor && req._actor.role === 'cashier') items.forEach(function (item) { item.cost = 0; });
+  return { sale: pubSale_(s), items: items };
 }
 
 function saveSettings_(req) {

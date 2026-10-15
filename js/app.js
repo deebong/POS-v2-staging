@@ -20,7 +20,7 @@ import * as reports from "./reports.js";
 import * as loyalty from "./loyalty.js";
 import * as staff from "./staff.js";
 import { initStaff, currentStaff, loginStaff, switchOperator, openOperatorMenu, can, refreshStaffSession } from "./staff.js";
-import { clearAuthToken } from "./auth.js";
+import { clearAuthToken, getAuthToken } from "./auth.js";
 import { openScanner } from "./scanner.js";
 import * as settings from "./settings.js";
 import { applySharedStoreConfigFromUrl, checkInstallation, showInstallationWizard } from "./installation.js";
@@ -74,6 +74,14 @@ async function navigate() {
   const name = location.hash.replace(/^#\/?/, "").split("?")[0] || "dashboard";
   const key = routes[name] ? name : "dashboard";
   const route = routes[key];
+  const requiredPermission = NAV_PERMISSION[key] || key;
+  // Route authorization must run before a page module is mounted. Hiding navigation
+  // links alone is not an access control: users can type a route hash directly.
+  if (!can(requiredPermission)) {
+    toast("Access denied. Your staff role cannot open this page.", "error");
+    if (location.hash !== "#/dashboard") location.hash = "#/dashboard";
+    return;
+  }
   if (current && current.mod.unmount) current.mod.unmount();
   const old = document.getElementById("view");
   const view = old.cloneNode(false);
@@ -302,6 +310,15 @@ async function init() {
     });
     renderOperator();
   }
+  const cloudConfigured = getConfig().mode !== "local" && !!getConfig().url;
+  if (!currentStaff()) {
+    await loginStaff();
+  } else if (navigator.onLine && cloudConfigured && !getAuthToken()) {
+    // Protected bootstrap reads now require a server session. A local remembered
+    // operator must explicitly re-authenticate before cloud data is loaded.
+    await loginStaff(true);
+  }
+  renderOperator();
   const dataReady = (async () => {
     try {
       await loadAll();
@@ -310,7 +327,6 @@ async function init() {
       // Hybrid mode is offline-first: represent sync failures in the single status/banner state.
     }
   })();
-  if (!currentStaff()) { await loginStaff(); renderOperator(); }
   await dataReady;
   navigate();
   renderBrandLogo();
@@ -323,7 +339,8 @@ async function init() {
   // When background server authentication completes after local sign-in, immediately
   // retry the durable hybrid queue so a transient auth race cannot leave the banner stuck.
   window.addEventListener("staff:server-auth", (e) => {
-    if (!e.detail?.ok || getConfig().mode !== "hybrid" || !navigator.onLine) return;
+    if (!e.detail?.ok || getConfig().mode === "local" || !navigator.onLine) return;
+    // Re-fetch role-scoped cloud data after an operator signs in or switches roles.
     refreshData().finally(() => renderSync());
   });
   window.addEventListener("data:changed", applyDataChange);

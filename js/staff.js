@@ -144,27 +144,28 @@ function sessionValid(s) {
 async function load() {
   const saved = await idb.get(KEY).catch(() => null);
   users = (await decryptUsers(saved).catch(() => [])).map(safeUser).filter(u => u.id && u.name && u.username);
+  // Migrate away the legacy hard-coded bootstrap identity only when its known default
+  // PIN verifier also matches. This prevents an old phantom "Anand Ibrahim" account
+  // from surviving upgrades while avoiding deletion of unrelated real staff records.
+  if (users.length === 1) {
+    const legacy = users[0];
+    if (legacy.name === "Anand Ibrahim" && legacy.username === "admin" && legacy.role === "admin" && legacy.mustChangePin) {
+      const legacyPin = await getPinVerifier(legacy, "1234").catch(() => "");
+      if (legacyPin && legacyPin === legacy.pinHash) {
+        users = [];
+        await idb.del(SESSION_KEY).catch(() => {});
+        await idb.del(KEY).catch(() => {});
+      }
+    }
+  }
   const session = await idb.get(SESSION_KEY).catch(() => null);
   currentId = sessionValid(session) && session.deviceId === localDeviceId() && getUser(session.userId)?.active ? session.userId : "";
   if (!currentId && session?.userId) await idb.del(SESSION_KEY).catch(() => {});
-  if (!users.length) {
-    const pin = await makePin("1234");
-    users = [{
-      id: uid(),
-      name: "Anand Ibrahim",
-      username: "admin",
-      phone: "",
-      role: "admin",
-      active: true,
-      createdAt: now(),
-      updatedAt: now(),
-      lastLoginAt: null,
-      ...pin,
-      mustChangePin: true,
-    }];
-    currentId = "";
-    await persist();
-  }
+  // Never invent a privileged account when this browser has no local staff records.
+  // Existing-store imports must authenticate against the Sheet's real staff directory;
+  // a fresh installation creates its first Super Admin through the explicit installer.
+  // In particular, never silently create a hard-coded "Anand Ibrahim" Super Admin.
+  if (!users.length) currentId = "";
 }
 
 export async function initStaff() {
@@ -235,6 +236,13 @@ async function signIn(user, pin) {
       if (serverUser.id !== user.id) {
         clearAuthToken();
         throw new Error("The Google Sheets staff account does not match this device's staff record. Use the one-time setup-code repair to reconcile staff accounts.");
+      }
+      // The server is authoritative for roles. Refresh the local role before route
+      // authorization so a stale/promoted local record cannot retain extra access.
+      const serverRole = normalizeRole(serverUser.role);
+      if (user.role !== serverRole) {
+        user.role = serverRole;
+        await persist();
       }
       sessionStorage.removeItem("freshmart.auth.offline");
       window.dispatchEvent(new CustomEvent("staff:server-auth", { detail: { ok: true } }));

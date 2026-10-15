@@ -624,10 +624,24 @@ export async function mount(el) {
 
   $("#custName", el).addEventListener("input", (e) => { S.customer.name = e.target.value; persist(); });
   $("#custPhone", el).addEventListener("input", debounce((e) => {
-    S.customer.phone = e.target.value; const raw = e.target.value.replace(/\D/g, "");
+    S.customer.phone = e.target.value;
+    const raw = e.target.value.replace(/\D/g, "");
     if (raw.length >= 7) {
-      const hit = state.sales.find(x => String(x.customerPhone || "").replace(/\D/g, "").slice(-10) === raw.slice(-10) && x.customerName);
-      if (hit) { S.customer.name = hit.customerName; $("#custName", el).value = hit.customerName; }
+      const normalized = (value) => String(value || "").replace(/\D/g, "");
+      const phoneMatches = (value) => {
+        const candidate = normalized(value);
+        return candidate.length >= 7 && (candidate === raw || candidate.slice(-10) === raw.slice(-10));
+      };
+      // Prefer the customer directory (which stores the current address), then fall
+      // back to previous invoices for legacy customers not yet in the directory.
+      const customer = state.customers.find(x => phoneMatches(x.phone));
+      const sale = customer ? null : state.sales.find(x => phoneMatches(x.customerPhone) && x.customerName);
+      if (customer || sale) {
+        S.customer.name = customer?.name || sale.customerName || S.customer.name;
+        S.customer.address = customer?.address || sale?.customerAddress || S.customer.address;
+        $("#custName", el).value = S.customer.name;
+        $("#custAddress", el).value = S.customer.address;
+      }
     }
     persist();
   }, 220));
