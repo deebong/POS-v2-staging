@@ -650,15 +650,23 @@ async function openEditor(existing=null) {
         users.push({id:uid(),name,username,role,phone,active:true,createdAt:now(),updatedAt:now(),lastLoginAt:null,...hashes,mustChangePin:true});
         await persist();
         const cfg = (() => { try { return JSON.parse(localStorage.getItem("pos.backend.v1") || "{}"); } catch { return {}; } })();
+        let serverSynced = false;
         if (navigator.onLine && cfg.mode && cfg.mode !== "local" && cfg.url) {
           try {
             await syncServerStaff();
+            serverSynced = true;
+            localStorage.removeItem(SERVER_SYNC_KEY);
           } catch (syncError) {
-            toast("Staff account saved locally, but Google Sheets sync failed: " + (syncError.message || syncError), "warn");
+            // Keep the local account, but persist a retry marker and never imply that
+            // Google Sheets has the account until the server confirms the directory sync.
+            localStorage.setItem(SERVER_SYNC_KEY, new Date().toISOString());
+            scheduleServerStaffSync();
+            toast("Staff account saved on this PC only; Google Sheets did not confirm the update: " + (syncError.message || syncError), "warn");
           }
         }
         m.close(); render();
-        toast("Staff account created");
+        if (serverSynced) toast("Staff account created and synchronized with Google Sheets");
+        else if (!navigator.onLine || !cfg.url || cfg.mode === "local") toast("Staff account created on this PC only. Connect Google Sheets to sync it.", "warn");
       }
     }catch(e){btn.disabled=false;toast(e.message||"Could not save staff account.","error");}
   };

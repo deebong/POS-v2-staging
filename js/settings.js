@@ -11,7 +11,7 @@ import { receiptHtml } from "./receipt.js";
 import { importBulk, importProducts, loadAll, reloadLocal, saveSettings, scriptUpToDate, state } from "./store.js";
 import { THEME_PRESETS, applyTheme, normalizeColor } from "./theme.js";
 import { LANGUAGE_OPTIONS } from "./i18n.js";
-import { can, ensureOnlineStaffAuth } from "./staff.js";
+import { can, currentStaff, ensureOnlineStaffAuth } from "./staff.js";
 import { buildExport, demoPayload, invoiceLinesCsv, invoicesCsv, productsCsv, toPortable } from "./transfer.js";
 import {
   $, choiceDialog, confirmDialog, downloadFile, esc, fmtBytes, hydrateIcons, icon, timeAgo, toast,
@@ -799,7 +799,7 @@ export async function mount(el) {
     const prev = state.settings;
     state.settings = { ...prev, ...read() }; // money() formatting reads the live currency
     try {
-      $("#setPreview", el).innerHTML = receiptHtml(SAMPLE_SALE, SAMPLE_ITEMS, state.settings);
+      $("#setPreview", el).innerHTML = receiptHtml({ ...SAMPLE_SALE, cashierName: currentStaff()?.name || currentStaff()?.username || "—", counterCode: getDevice().code }, SAMPLE_ITEMS, state.settings);
     } finally {
       state.settings = prev;
     }

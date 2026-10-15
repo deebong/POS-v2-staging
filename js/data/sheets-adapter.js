@@ -61,14 +61,14 @@ export function createSheetsAdapter({ url, key }) {
     kind: "sheets",
     // Connectivity/auth probes must fail fast. They must never make the operator wait through
     // two 45-second attempts when the Apps Script deployment is stale or unavailable.
-    ping: () => call("ping", {}, { timeoutMs: 8000, retries: 0 }),
-    authChallenge: (arg) => call("authChallenge", arg, { timeoutMs: 12000, retries: 0 }),
-    authLogin: (arg) => call("authLogin", arg, { timeoutMs: 12000, retries: 0 }),
-    authLogout: () => call("authLogout", {}, { timeoutMs: 8000, retries: 0 }),
+    ping: () => call("ping", {}, { timeoutMs: 20000, retries: 1 }),
+    authChallenge: (arg) => call("authChallenge", arg, { timeoutMs: 25000, retries: 1 }),
+    authLogin: (arg) => call("authLogin", arg, { timeoutMs: 25000, retries: 1 }),
+    authLogout: () => call("authLogout", {}, { timeoutMs: 15000, retries: 0 }),
     // Staff provisioning is background work. Apps Script can be cold or briefly busy;
     // give it a real retry window instead of surfacing an 8–15s timeout to the operator.
     authSyncStaff: (arg) => call("authSyncStaff", arg, { timeoutMs: 45000, retries: 2 }),
-    authStatus: () => call("authStatus", {}, { timeoutMs: 8000, retries: 0 }),
+    authStatus: () => call("authStatus", {}, { timeoutMs: 20000, retries: 1 }),
     installationStatus: () => call("installationStatus", {}, { timeoutMs: 12000, retries: 0 }),
     initialize: (arg) => call("initialize", arg, { timeoutMs: 120000, retries: 0 }),
     authDevices: () => call("authDevices", {}, { timeoutMs: 12000, retries: 0 }),
