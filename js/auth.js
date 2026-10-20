@@ -5,6 +5,39 @@ import { derivePinHash } from "./staff.js";
 
 const TOKEN_KEY = "freshmart.auth.token";
 const DEVICE_KEY = "freshmart.auth.device";
+const challengeCache = new Map();
+
+export function prefetchAuthChallenge(username) {
+  const key = String(username || "").trim().toLowerCase();
+  if (!key) return Promise.reject(new Error("Username is required."));
+  const cached = challengeCache.get(key);
+  if (cached && Date.now() - cached.startedAt < 120000) return cached.promise;
+  if (cached) challengeCache.delete(key);
+  const entry = { startedAt: Date.now(), promise: null };
+  entry.promise = adapter().authChallenge({ username: key }).catch((error) => {
+    if (challengeCache.get(key) === entry) challengeCache.delete(key);
+    throw error;
+  });
+  challengeCache.set(key, entry);
+  return entry.promise;
+}
+
+async function challengeForLogin(username) {
+  const key = String(username || "").trim().toLowerCase();
+  const cached = challengeCache.get(key);
+  if (cached && Date.now() - cached.startedAt < 120000) {
+    try {
+      const challenge = await cached.promise;
+      if (challengeCache.get(key) === cached) challengeCache.delete(key);
+      return challenge;
+    } catch (error) {
+      if (challengeCache.get(key) === cached) challengeCache.delete(key);
+      throw error;
+    }
+  }
+  if (cached) challengeCache.delete(key);
+  return prefetchAuthChallenge(key);
+}
 
 function deviceId() {
   let id = localStorage.getItem(DEVICE_KEY);
@@ -30,7 +63,7 @@ export async function onlineLogin(username, pin, options = {}) {
   const nonce = (globalThis.crypto?.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`) + `-${Math.random().toString(36).slice(2)}`;
   let pinHash = localHash;
   if (!pinHash) {
-    const challenge = await api.authChallenge({ username });
+    const challenge = await challengeForLogin(username);
     pinHash = await derivePinHash(pin, challenge.pinSalt, challenge.pinIterations);
   }
   const response = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${pinHash}:${nonce}`));
@@ -41,7 +74,12 @@ export async function onlineLogin(username, pin, options = {}) {
   return result.staff;
 }
 export async function onlineLogout() {
-  try { if (getAuthToken()) await adapter().authLogout(); } finally { clearAuthToken(); }
+  const token = getAuthToken();
+  // Remove the credential from this browser immediately; the server revocation
+  // request carries the captured token and must not block local logout.
+  clearAuthToken();
+  if (!token) return;
+  await adapter().authLogout({ authToken: token });
 }
 
 export async function syncStaffToServer(users, setupCode = "") {

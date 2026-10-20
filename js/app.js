@@ -75,6 +75,13 @@ async function navigate() {
   const key = routes[name] ? name : "dashboard";
   const route = routes[key];
   const requiredPermission = NAV_PERMISSION[key] || key;
+  // Never leave the previous page DOM visible after logout, session expiry, or a
+  // rejected server identity; that DOM may contain sensitive business data.
+  if (!currentStaff()) {
+    const view = $("#view");
+    if (view) view.innerHTML = `<div class="empty"><div class="big">${icon("lock")}</div><h4>Sign in required</h4><p>Sign in with an active staff account to continue.</p></div>`;
+    return;
+  }
   // Route authorization must run before a page module is mounted. Hiding navigation
   // links alone is not an access control: users can type a route hash directly.
   if (!can(requiredPermission)) {
@@ -114,8 +121,11 @@ function renderOperator() {
   const u = currentStaff();
   const name = $("#cashierName");
   const role = $("#cashierRole");
-  if (name) name.textContent = u?.name || "No operator";
+  const avatar = $("#cashierAvatar") || document.querySelector(".cashier-card .avatar");
+  const displayName = u?.name || "No operator";
+  if (name) name.textContent = displayName;
   if (role) role.textContent = `${u?.role ? ({ admin: "Super Admin", manager: "Manager", cashier: "Cashier" }[u.role] || u.role) : "Not signed in"} · Counter 1`;
+  if (avatar) avatar.textContent = u?.name ? u.name.trim().split(/\s+/).filter(Boolean).slice(0, 2).map(part => part[0]).join("").toUpperCase() : "—";
 }
 function applyFavicon() {
   const link = document.querySelector('link[rel="icon"]');
@@ -132,7 +142,12 @@ function renderBrandLogo() {
     ? '<img class="brand-logo-img" src="' + esc(state.settings.logoUrl) + '" alt="' + esc(state.settings.storeName || "Store") + '" />'
     : icon("bag");
   $("#brandName").textContent = state.settings.storeName || "FreshMart";
-  $("#brandSub").textContent = state.settings.brandTagline || "Grocery POS";
+  const sub = $("#brandSub");
+  if (sub) {
+    const tagline = String(state.settings.brandTagline ?? "").trim();
+    sub.textContent = tagline;
+    sub.hidden = !tagline;
+  }
 }
 function applyBrand() {
   applyTheme(state.settings);
@@ -312,13 +327,27 @@ async function init() {
   }
   const cloudConfigured = getConfig().mode !== "local" && !!getConfig().url;
   if (!currentStaff()) {
+    document.body.classList.add("auth-locked");
     await loginStaff();
   } else if (navigator.onLine && cloudConfigured && !getAuthToken()) {
-    // Protected bootstrap reads now require a server session. A local remembered
-    // operator must explicitly re-authenticate before cloud data is loaded.
+    document.body.classList.add("auth-locked");
     await loginStaff(true);
   }
+  document.body.classList.toggle("auth-locked", !currentStaff());
   renderOperator();
+  let authExpiryInProgress = false;
+  window.addEventListener("auth:expired", async () => {
+    if (authExpiryInProgress || getConfig().mode === "local") return;
+    authExpiryInProgress = true;
+    document.body.classList.add("auth-locked");
+    try {
+      await logoutStaff();
+      location.hash = "#/dashboard";
+      await loginStaff(true);
+    } finally {
+      authExpiryInProgress = false;
+    }
+  });
   const dataReady = (async () => {
     try {
       await loadAll();
@@ -346,7 +375,25 @@ async function init() {
   window.addEventListener("data:changed", applyDataChange);
   window.addEventListener("settings:changed", () => { applyBrand(); applyLanguage(document, state.settings.language); });
   window.addEventListener("language:preview", (e) => applyLanguage(document, e.detail?.language || "en"));
-  window.addEventListener("staff:changed", renderOperator);
+  window.addEventListener("staff:switched", () => {
+    renderOperator();
+    document.body.classList.toggle("auth-locked", !currentStaff());
+    // Always land on a newly mounted dashboard after changing operators, even when
+    // the current route is already the dashboard (hashchange would not fire then).
+    if (location.hash === "#/dashboard") navigate();
+    else location.hash = "#/dashboard";
+  });
+  window.addEventListener("staff:changed", () => {
+    renderOperator();
+    if (!currentStaff()) {
+      document.body.classList.add("auth-locked");
+      const view = $("#view");
+      if (view) view.innerHTML = `<div class="empty"><div class="big">${icon("lock")}</div><h4>Sign in required</h4><p>Sign in with an active staff account to continue.</p></div>`;
+    } else {
+      document.body.classList.remove("auth-locked");
+      if ($("#view")?.querySelector("h4")?.textContent === "Sign in required") navigate();
+    }
+  });
   window.addEventListener("pos:synced", () => reloadLocal());
   window.addEventListener("pwa:status", renderInstall);
   $("#syncPill").addEventListener("click", onPillClick);

@@ -147,6 +147,9 @@ export async function createHybridAdapter(cfg) {
         if (throwOnError) throw new Error("You're offline");
         return { offline: true };
       }
+      // Background retry timers must not flash "Syncing" when there is no queued work.
+      // A pull is still performed when explicitly requested.
+      if (!pull && outbox.length === 0) return { skipped: true, pending: 0 };
       status.syncing = true;
       emit();
       let changed = false;
@@ -347,6 +350,12 @@ export async function createHybridAdapter(cfg) {
       schedulePush();
       return { queued: true };
     },
+    // Disaster-recovery actions operate on the authoritative cloud sheet, not the local snapshot.
+    // Expose them on the hybrid adapter so Settings can reach the Apps Script methods in this mode.
+    backupStatus: () => remote.backupStatus(),
+    backupSetup: (arg) => remote.backupSetup(arg),
+    backupNow: (arg) => remote.backupNow(arg),
+    backupVerify: () => remote.backupVerify(),
     async backupRestore(arg) {
       if (!navigator.onLine) throw new Error("Restore requires an online connection to Google Sheets.");
       return remote.backupRestore(arg);

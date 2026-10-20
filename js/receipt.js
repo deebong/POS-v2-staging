@@ -18,7 +18,7 @@ export function receiptHtml(sale, items, settings = state.settings) {
     .map(
       (it) => `
       <div class="rc-item">
-        <div class="nm">${esc(it.name)}</div>
+        <div class="nm">${esc(it.name)}${(it.nameTa || state.products.find(p => Number(p.id) === Number(it.productId))?.nameTa) ? `<small class="secondary-name" lang="ta">${esc(it.nameTa || state.products.find(p => Number(p.id) === Number(it.productId))?.nameTa)}</small>` : ""}</div>
         <div class="calc"><span>${num(it.qty)} ${esc(it.unit)} × ${rmoney(it.price)}</span><span>${rmoney(it.lineSubtotal)}</span></div>
       </div>`,
     )

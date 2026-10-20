@@ -1,7 +1,7 @@
 // Settings: data storage & sync mode, offline/PWA, backups, store profile, receipt preview
 import { backend, currentStatus, getConfig, getDevice, saveConfig, setDeviceCode } from "./data/backend.js";
 import {
-  chooseFolder, folderState, folderSupported, forgetFolder, reconnectFolder, writeNow,
+  chooseFolder, folderState, folderSupported, forgetFolder, reconnectFolder, verifyFolderBackup, writeNow,
 } from "./data/folder-backup.js";
 import { peekLocalDb } from "./data/local-adapter.js";
 import { sampleProducts } from "./data/sample.js";
@@ -147,6 +147,7 @@ export async function mount(el) {
             <div class="field"><label>Store logo</label><input class="input" type="file" id="settingsLogo" accept="image/png,image/jpeg,image/webp,image/gif"><span class="hint">Upload a custom logo. It will be fitted automatically; the original file is retained in Drive.</span></div>
             <div class="field"><label>UPI QR image</label><input class="input" type="file" id="settingsUpiQr" accept="image/png,image/jpeg,image/webp,image/gif"><span class="hint">Optional custom QR image for payment display.</span></div>
             <div class="field span-2"><label>UPI payment IDs</label><div id="upiSettingsRows"></div><button class="btn btn-ghost" type="button" id="addUpiId">+ Add another UPI ID</button><span class="hint">Add multiple UPI IDs and mark exactly one as Default. The Default ID is used for new UPI QR payments.</span></div>
+            <div class="field"><label>GST invoice template</label><select class="select" name="gstInvoiceTheme"><option value="classic" ${(state.settings.gstInvoiceTheme||"classic")==="classic"?"selected":""}>Classic — professional</option><option value="modern" ${state.settings.gstInvoiceTheme==="modern"?"selected":""}>Modern — blue accent</option><option value="minimal" ${state.settings.gstInvoiceTheme==="minimal"?"selected":""}>Minimal — monochrome</option><option value="emerald" ${state.settings.gstInvoiceTheme==="emerald"?"selected":""}>Emerald — green accent</option></select><span class="hint">Applies to GST bill print and export.</span></div>
             <div class="field span-2"><label>Product label code</label>
               <select class="select" name="productLabelCode">
                 <option value="qr" ${state.settings.productLabelCode === "barcode" ? "" : "selected"}>QR code — use the product SKU</option>
@@ -440,7 +441,7 @@ export async function mount(el) {
     const msg =
       mode === "local"
         ? "All data on this PC will be replaced by the backup. This can't be undone."
-        : "Changes in the backup that the sheet doesn't have yet will be queued and synced. Nothing is overwritten.";
+        : "This merges missing records into the cloud data. Existing products and invoices are not overwritten or deleted, so this does not roll back renamed products. For a full cloud rollback, use Admin restore from a Google Drive backup.";
     if (!(await confirmDialog({ title: `Restore “${file.name}”?`, message: msg, confirmText: "Restore", danger: mode === "local" }))) return;
     try {
       const r = await backend.importData(data);
@@ -680,7 +681,11 @@ export async function mount(el) {
         busy(btn, true, "Setting up…");
         const r = await backend.backupSetup({ hour: 2 });
         if (!r || r.ok === false || r.configured === false) throw new Error(r?.message || r?.error || "The Apps Script did not confirm that Google Drive backups were enabled.");
-        toast(r.message || "Automatic Google Drive backups enabled", "success");
+        const verified = await backend.backupStatus();
+        if (!verified || verified.configured !== true) {
+          throw new Error(verified?.lastBackupError || "The setup request returned, but the Apps Script could not verify the Drive folder and scheduled backup triggers. Confirm Drive authorization and deploy the current Code.gs version.");
+        }
+        toast(verified.message || r.message || "Automatic Google Drive backups enabled", "success");
         renderBackup();
       } else if (act === "cloudBackupNow") {
         if (!navigator.onLine) return toast("Cloud backup needs internet.", "warn");
@@ -892,6 +897,7 @@ export async function mount(el) {
       // admin session is valid before uploading branding files or saving settings.
       await ensureSettingsAuth();
       const values = read();
+      values.brandTagline = $("[name=\"brandTagline\"]", form).value.trim();
       // Keep the select-backed setting explicit. This avoids FormData edge cases after
       // a live-preview change event and makes the persisted value authoritative.
       values.productLabelCode = $("[name=\"productLabelCode\"]", form).value;
@@ -985,4 +991,31 @@ export async function mount(el) {
   renderOffline();
   renderBackup();
   renderTransfer();
+  // Settings sections are independent accordions. Reattach controls after dynamic panels rerender.
+  const settingsGrid = $(".settings-grid", el);
+  const pageHead = $(".page-head", el);
+  if (pageHead && !$("#settingsExpandAll", el)) {
+    const allButton = document.createElement("button"); allButton.type = "button"; allButton.id = "settingsExpandAll"; allButton.className = "btn btn-outline btn-sm"; allButton.textContent = "Collapse all";
+    ($(".actions", pageHead) || pageHead).appendChild(allButton);
+    allButton.addEventListener("click", () => {
+      const cards = [...(settingsGrid?.querySelectorAll(".card") || [])];
+      const collapse = cards.some(card => card.dataset.accordionCollapsed !== "true");
+      cards.forEach(card => { card.dataset.accordionCollapsed = String(collapse); const head = [...card.children].find(node => node.classList?.contains("sec-head")); [...card.children].forEach(node => { if (node !== head) node.hidden = collapse; }); const toggle = head?.querySelector("[data-settings-accordion]"); if (toggle) { toggle.textContent = collapse ? "+" : "−"; toggle.setAttribute("aria-expanded", String(!collapse)); } });
+      allButton.textContent = collapse ? "Expand all" : "Collapse all";
+    });
+  }
+  const setupAccordions = () => {
+    for (const card of settingsGrid?.querySelectorAll(".card") || []) {
+      const head = [...card.children].find(node => node.classList?.contains("sec-head")); if (!head) continue;
+      if (!card.dataset.accordionCollapsed) card.dataset.accordionCollapsed = "false";
+      if (!head.querySelector("[data-settings-accordion]")) { const toggle = document.createElement("button"); toggle.type = "button"; toggle.dataset.settingsAccordion = "1"; toggle.className = "icon-btn"; toggle.style.marginLeft = "auto"; toggle.textContent = card.dataset.accordionCollapsed === "true" ? "+" : "−"; toggle.setAttribute("aria-expanded", String(card.dataset.accordionCollapsed !== "true")); toggle.setAttribute("aria-label", "Expand or collapse section"); head.appendChild(toggle); }
+      const hidden = card.dataset.accordionCollapsed === "true"; [...card.children].forEach(node => { if (node !== head) node.hidden = hidden; });
+    }
+  };
+  if (settingsGrid && !settingsGrid.dataset.accordionsBound) {
+    settingsGrid.dataset.accordionsBound = "true";
+    settingsGrid.addEventListener("click", event => { const toggle = event.target.closest("[data-settings-accordion]"); if (!toggle) return; const card = toggle.closest(".card"); const head = toggle.closest(".sec-head"); const hidden = card.dataset.accordionCollapsed !== "true"; card.dataset.accordionCollapsed = String(hidden); [...card.children].forEach(node => { if (node !== head) node.hidden = hidden; }); toggle.textContent = hidden ? "+" : "−"; toggle.setAttribute("aria-expanded", String(!hidden)); const allButton = $("#settingsExpandAll", el); if (allButton) allButton.textContent = [...settingsGrid.querySelectorAll(".card")].every(card => card.dataset.accordionCollapsed === "true") ? "Expand all" : "Collapse all"; });
+    const observer = new MutationObserver(setupAccordions); observer.observe(settingsGrid, { childList: true, subtree: true }); cleanup.push(() => observer.disconnect());
+  }
+  setupAccordions();
 }

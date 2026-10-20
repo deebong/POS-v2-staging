@@ -32,12 +32,12 @@
 
 var API_KEY = ''; // optional shared secret, e.g. 'my-store-key-123'
 var SPREADSHEET_ID = ''; // leave empty when the script is opened from the sheet (Extensions ▸ Apps Script)
-var VERSION = '1.6.0';
+var VERSION = '1.6.2';
 var MAX_CART_LINES = 150;
 
 // Column schema: [name, type]  n = number, s = text, b = true/false, d = date-time
 var SCHEMA = {
-  Products: [['id', 'n'], ['sku', 's'], ['barcode', 's'], ['name', 's'], ['category', 's'], ['emoji', 's'], ['unit', 's'],
+  Products: [['id', 'n'], ['sku', 's'], ['barcode', 's'], ['name', 's'], ['nameTa', 's'], ['category', 's'], ['emoji', 's'], ['unit', 's'],
     ['price', 'n'], ['cost', 'n'], ['taxRate', 'n'], ['stock', 'n'], ['reorderLevel', 'n'], ['isActive', 'b'],
     ['createdAt', 'd'], ['updatedAt', 'd'], ['imageUrl', 's']],
   Sales: [['id', 'n'], ['invoiceNo', 's'], ['createdAt', 'd'], ['customerName', 's'], ['customerPhone', 's'], ['customerAddress', 's'],
@@ -244,7 +244,8 @@ function requireActionAuth_(req) {
     saveProduct: 'manager', deleteProduct: 'manager', adjustStock: 'manager', importProducts: 'manager',
     checkout: 'cashier', voidSale: 'manager', saveSettings: 'admin', importBulk: 'manager',
     uploadImage: 'manager', saveCustomer: 'cashier', backupStatus: 'admin', backupSetup: 'admin',
-    backupNow: 'admin', backupVerify: 'admin', backupRestore: 'admin', procurementSync: 'manager'
+    backupNow: 'admin', backupVerify: 'admin', backupRestore: 'admin', procurementSync: 'manager',
+    returnsBootstrap: 'cashier', returnsCreate: 'cashier', returnsSync: 'cashier'
   };
   if (action === 'installationStatus' || action === 'initialize') return null;
   if (action === 'auditAppend') return authRequireRole_(req, 'cashier');
@@ -450,7 +451,7 @@ function setupSheet_(ss, name) {
   return sh;
 }
 
-// Sheets created by an older version get any new columns (e.g. imageUrl) added at the end.
+// Schema upgrades align known columns by header name and the declared order; unknown legacy columns are preserved at the end.
 function ensureHeaders_(sh, name) {
   var cols = SCHEMA[name];
   var schemaNames = cols.map(function (c) { return c[0]; });
@@ -661,7 +662,8 @@ function parseProduct_(b) {
     price: r2_(price), cost: r2_(cost), taxRate: r2_(taxRate),
     stock: r3_(stock), reorderLevel: r3_(reorder),
     isActive: b.isActive === undefined ? true : !!b.isActive,
-    imageUrl: safeImageUrl_(b.imageUrl)
+    imageUrl: safeImageUrl_(b.imageUrl),
+    nameTa: str_(b.nameTa, 120)
   };
 }
 
@@ -681,7 +683,7 @@ function pubProduct_(p) {
   return {
     id: p.id, sku: p.sku, barcode: p.barcode || null, name: p.name, category: p.category, emoji: p.emoji,
     unit: p.unit, price: p.price, cost: p.cost, taxRate: p.taxRate, stock: p.stock, reorderLevel: p.reorderLevel,
-    isActive: p.isActive, createdAt: p.createdAt, updatedAt: p.updatedAt, imageUrl: p.imageUrl || ''
+    isActive: p.isActive, createdAt: p.createdAt, updatedAt: p.updatedAt, imageUrl: p.imageUrl || '', nameTa: p.nameTa || ''
   };
 }
 function pubSale_(s) {
@@ -1328,7 +1330,16 @@ function uploadImage_(req) {
   if (data.length > 4000000) throw new Error('Image is too large (max ~3 MB)');
   var ext = m[2] === 'jpeg' ? 'jpg' : m[2];
   var name = (str_(req.name, 60) || 'product').replace(/[^A-Za-z0-9_-]+/g, '_') + '-' + new Date().getTime() + '.' + ext;
-  var file = imagesFolder_().createFile(Utilities.newBlob(Utilities.base64Decode(m[3]), m[1], name));
+  var file;
+  try {
+    file = imagesFolder_().createFile(Utilities.newBlob(Utilities.base64Decode(m[3]), m[1], name));
+  } catch (e) {
+    var message = String((e && e.message) || e);
+    if (/authorization|permission|access denied|not have permission/i.test(message)) {
+      throw new Error('Google Drive authorization is required for product photos. In the Apps Script editor, run authorize() once as the script owner, approve Drive access, then redeploy a new version.');
+    }
+    throw e;
+  }
   var warning;
   try {
     file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
@@ -1358,7 +1369,15 @@ function backupRoot_() {
   var props = backupProps_();
   var id = props.getProperty('BACKUP_FOLDER_ID');
   if (id) {
-    try { return DriveApp.getFolderById(id); } catch (e) { /* recreate */ }
+    try { return DriveApp.getFolderById(id); } catch (e) { /* stale ID: try to reuse an existing root */ }
+  }
+  // Script Properties are per project. Reuse a same-name root where possible so
+  // deployments do not create needless duplicate root folders.
+  var existing = DriveApp.getFoldersByName(BACKUP_ROOT);
+  if (existing.hasNext()) {
+    var reused = existing.next();
+    props.setProperty('BACKUP_FOLDER_ID', reused.getId());
+    return reused;
   }
   var folder = DriveApp.createFolder(BACKUP_ROOT);
   props.setProperty('BACKUP_FOLDER_ID', folder.getId());
@@ -1477,31 +1496,48 @@ function freshmartWeeklyBackup_() { backupRun_('weekly'); }
 function freshmartMonthlyBackup_() { backupRun_('monthly'); }
 
 function backupSetup_() {
-  var props = backupProps_();
-  var root = backupRoot_();
-  ScriptApp.getProjectTriggers().forEach(function (t) {
-    var fn = t.getHandlerFunction();
-    if (fn === 'freshmartDailyBackup_' || fn === 'freshmartWeeklyBackup_' || fn === 'freshmartMonthlyBackup_') ScriptApp.deleteTrigger(t);
-  });
-  var hour = 2;
-  ScriptApp.newTrigger('freshmartDailyBackup_').timeBased().atHour(hour).everyDays(1).create();
-  ScriptApp.newTrigger('freshmartWeeklyBackup_').timeBased().atHour(hour).everyWeeks(1).onWeekDay(ScriptApp.WeekDay.MONDAY).create();
-  ScriptApp.newTrigger('freshmartMonthlyBackup_').timeBased().atHour(hour).onMonthDay(1).create();
-  props.setProperty('BACKUP_CONFIGURED', 'true');
-  props.setProperty('BACKUP_FOLDER_ID', root.getId());
-  return { configured: true, folderUrl: root.getUrl(), message: 'Automatic daily, weekly and monthly Google Drive backups are enabled.' };
+  try {
+    var props = backupProps_();
+    var root = backupRoot_();
+    ScriptApp.getProjectTriggers().forEach(function (t) {
+      var fn = t.getHandlerFunction();
+      if (fn === 'freshmartDailyBackup_' || fn === 'freshmartWeeklyBackup_' || fn === 'freshmartMonthlyBackup_') ScriptApp.deleteTrigger(t);
+    });
+    var hour = 2;
+    ScriptApp.newTrigger('freshmartDailyBackup_').timeBased().atHour(hour).everyDays(1).create();
+    ScriptApp.newTrigger('freshmartWeeklyBackup_').timeBased().atHour(hour).everyWeeks(1).onWeekDay(ScriptApp.WeekDay.MONDAY).create();
+    ScriptApp.newTrigger('freshmartMonthlyBackup_').timeBased().atHour(hour).onMonthDay(1).create();
+    props.setProperty('BACKUP_FOLDER_ID', root.getId());
+    props.setProperty('BACKUP_CONFIGURED', 'true');
+    return { configured: true, folderUrl: root.getUrl(), message: 'Automatic daily, weekly and monthly Google Drive backups are enabled.' };
+  } catch (e) {
+    var message = String((e && e.message) || e);
+    if (/authorization|permission|access denied|not have permission/i.test(message)) {
+      throw new Error('Google Drive backup authorization is required. In the Apps Script editor, run authorize() once as the script owner, approve Drive access, then redeploy a new version.');
+    }
+    throw e;
+  }
 }
 
 function backupStatus_() {
   var props = backupProps_();
-  var configured = props.getProperty('BACKUP_CONFIGURED') === 'true';
   var folderUrl = '';
   var id = props.getProperty('BACKUP_FOLDER_ID');
   if (id) {
     try { folderUrl = DriveApp.getFolderById(id).getUrl(); } catch (e) {}
   }
+  var required = { freshmartDailyBackup_: false, freshmartWeeklyBackup_: false, freshmartMonthlyBackup_: false };
+  try {
+    ScriptApp.getProjectTriggers().forEach(function (t) {
+      var fn = t.getHandlerFunction();
+      if (Object.prototype.hasOwnProperty.call(required, fn)) required[fn] = true;
+    });
+  } catch (e) {}
+  var triggersReady = Object.keys(required).every(function (fn) { return required[fn]; });
+  var configured = props.getProperty('BACKUP_CONFIGURED') === 'true' && triggersReady && !!folderUrl;
   return {
     configured: configured,
+    triggersReady: triggersReady,
     folderUrl: folderUrl,
     lastBackupAt: props.getProperty('BACKUP_LAST_AT') || null,
     lastBackupOk: props.getProperty('BACKUP_LAST_OK') === 'true' ? true : props.getProperty('BACKUP_LAST_OK') === 'false' ? false : null,
